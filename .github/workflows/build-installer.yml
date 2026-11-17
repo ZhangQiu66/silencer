@@ -1,0 +1,64 @@
+name: Build silencer installer
+
+on:
+  push:
+    branches:
+      - fix/autostart-default-on-install
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: Restore NuGet packages
+        run: nuget restore QuietOnTheSetUI\QuietOnTheSetUI.sln
+
+      - name: Build Release
+        run: msbuild QuietOnTheSetUI\QuietOnTheSetUI.sln /p:Configuration=Release /p:Platform="Any CPU" /m
+
+      - name: Static checks (quoting + sources)
+        shell: pwsh
+        run: |
+          ./tools/static-check.ps1
+
+      - name: Install NSIS
+        run: choco install nsis -y --no-progress
+
+      - name: Build NSIS installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" installer\silencer.nsi
+          if ($LASTEXITCODE -ne 0) { throw "makensis failed: $LASTEXITCODE" }
+
+      - name: Hash artifacts
+        shell: pwsh
+        run: |
+          Get-ChildItem dist, QuietOnTheSetUI\bin\Release -File |
+            Where-Object { $_.Extension -in '.exe','.dll','.config' } |
+            ForEach-Object {
+              $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+              "{0}  {1}  {2} bytes" -f $hash, $_.FullName, $_.Length
+            } | Tee-Object -FilePath dist\SHA256.txt
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: silencer-Setup-1.1.0
+          path: |
+            dist/silencer-Setup-1.1.0.exe
+            dist/SHA256.txt
+            QuietOnTheSetUI/bin/Release/silencer.exe
+            QuietOnTheSetUI/bin/Release/silencer.exe.config
+            QuietOnTheSetUI/bin/Release/NAudio.dll
