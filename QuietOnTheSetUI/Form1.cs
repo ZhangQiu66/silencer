@@ -21,6 +21,7 @@ namespace QuietOnTheSetUI
         private string _password;
         private int _maxVolume;
         private bool _exitAllowed = false;
+        private bool _suppressAutostartEvents = false;
 
         // Removes the app from Alt+Tab window if minimized
         protected override CreateParams CreateParams
@@ -52,14 +53,14 @@ namespace QuietOnTheSetUI
 
             try
             {
-                checkBox1.Checked = Convert.ToBoolean(Properties.Settings.Default["StartAutomatically"]);
                 checkBox2.Checked = Convert.ToBoolean(Properties.Settings.Default["StartMinimized"]);
             }
             catch (Exception)
             {
-                checkBox1.Checked = false;
                 checkBox2.Checked = false;
             }
+
+            InitializeAutostartUi();
 
             try
             {
@@ -307,24 +308,117 @@ namespace QuietOnTheSetUI
             }
         }
 
+        private void InitializeAutostartUi()
+        {
+            _suppressAutostartEvents = true;
+            try
+            {
+                bool preferAutostart;
+                try
+                {
+                    preferAutostart = Convert.ToBoolean(Properties.Settings.Default["StartAutomatically"]);
+                }
+                catch (Exception)
+                {
+                    preferAutostart = true;
+                }
+
+                string exePath = Application.ExecutablePath;
+                bool registered = AutostartHelper.IsRegisteredFor(exePath);
+                bool windowsDisabled = AutostartHelper.IsDisabledByWindows();
+
+                // Installer may have written the Run key before first launch.
+                // Prefer registry truth for display; do not clear a valid install registration
+                // just because an older user.config still says false.
+                if (registered && !preferAutostart)
+                {
+                    preferAutostart = true;
+                    Properties.Settings.Default["StartAutomatically"] = true;
+                    Properties.Settings.Default.Save();
+                    AutostartLog.Write("prefer-synced-from-registry", "registered=true");
+                }
+
+                // Repair missing/wrong Run value only when the user still prefers autostart
+                // and Windows has not disabled the startup entry.
+                if (preferAutostart && !registered && !windowsDisabled)
+                {
+                    string error;
+                    if (AutostartHelper.TryEnable(exePath, out error))
+                    {
+                        registered = true;
+                    }
+                    else
+                    {
+                        AutostartLog.Write("startup-provision-failed", error ?? "");
+                        if (!string.IsNullOrWhiteSpace(error))
+                        {
+                            MessageBox.Show(error, "登录自启动", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        }
+                    }
+                }
+                else if (preferAutostart && windowsDisabled)
+                {
+                    AutostartLog.Write("startup-windows-disabled", "leaving StartupApproved unchanged");
+                    MessageBox.Show(
+                        "检测到 Windows 已在任务管理器中禁用 silencer 登录启动。请手动重新启用以恢复开机自启；本程序不会绕过该设置。",
+                        "登录自启动",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                }
+
+                // Checkbox reflects the Run key itself. StartupApproved (Task Manager)
+                // disable is reported separately and never cleared by this app.
+                checkBox1.Checked = AutostartHelper.IsRegisteredFor(exePath);
+            }
+            finally
+            {
+                _suppressAutostartEvents = false;
+            }
+        }
+
         private void checkBox1_CheckedChanged(object sender, EventArgs e)
         {
-            RegistryKey rk = Registry.CurrentUser.OpenSubKey
-                ("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", true);
+            if (_suppressAutostartEvents)
+            {
+                return;
+            }
 
             if (checkBox1.Checked)
             {
-                rk.SetValue("silencer", Application.ExecutablePath.ToString());
-                rk.DeleteValue("QuietOnTheSet", false);
+                string error;
+                if (!AutostartHelper.TryEnable(Application.ExecutablePath, out error))
+                {
+                    _suppressAutostartEvents = true;
+                    checkBox1.Checked = false;
+                    _suppressAutostartEvents = false;
+                    Properties.Settings.Default["StartAutomatically"] = false;
+                    Properties.Settings.Default.Save();
+                    MessageBox.Show(
+                        string.IsNullOrWhiteSpace(error) ? "设置登录自启动失败。" : error,
+                        "登录自启动",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                    return;
+                }
+
+                Properties.Settings.Default["StartAutomatically"] = true;
+                Properties.Settings.Default.Save();
             }
             else
             {
-                rk.DeleteValue("silencer", false);
-                rk.DeleteValue("QuietOnTheSet", false);
-            }
+                string error;
+                if (!AutostartHelper.TryDisable(out error))
+                {
+                    MessageBox.Show(
+                        string.IsNullOrWhiteSpace(error) ? "取消登录自启动失败。" : error,
+                        "登录自启动",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                }
 
-            Properties.Settings.Default["StartAutomatically"] = checkBox1.Checked;
-            Properties.Settings.Default.Save();
+                Properties.Settings.Default["StartAutomatically"] = false;
+                Properties.Settings.Default.Save();
+            }
         }
 
         private void checkBox2_CheckedChanged(object sender, EventArgs e)

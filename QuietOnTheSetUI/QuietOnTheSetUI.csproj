@@ -58,6 +58,10 @@
     </Compile>
     <Compile Include="Program.cs" />
     <Compile Include="VolumeGuard.cs" />
+    <Compile Include="AutostartHelper.cs" />
+    <Compile Include="QuoteToastForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="Properties\AssemblyInfo.cs" />
     <EmbeddedResource Include="Form1.resx">
       <DependentUpon>Form1.cs</DependentUpon>
